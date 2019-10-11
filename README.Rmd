@@ -1,0 +1,129 @@
+---
+output: github_document
+---
+
+# Integrating H2O & tidyverse
+
+During [LatinR2019](https://latin-r.com/), several people were asking Erin Ledell about tidyverse and H2O integration, she said that it was actually a work in mind. So I thought, if my community would enjoy it, maybe as a community we should do it -that's what open source is about-.
+
+By installing the `tidyh2o` package:
+
+```{r eval = FALSE}
+if (!require("remotes")) {
+  install.packages("remotes")
+}
+remotes::install_github("jcrodriguez1989/tidyh2o")
+```
+
+we can use `h2o` in a tidyverse style:
+
+```{r echo = FALSE}
+unloadNamespace("dplyr")
+unloadNamespace("tidyh2o")
+```
+
+```{r}
+library("dplyr")
+library("h2o")
+library("tidyh2o")
+
+h2o.init()
+h2o.no_progress() # Turn off progress bars for notebook readability
+
+# Use data file from GitHub
+data_file <- 
+  "https://raw.githubusercontent.com/ledell/LatinR-2019-h2o-tutorial/master/data/loan.csv"
+
+data <- h2o.importFile(data_file) # 163,987 rows x 15 columns
+data %>% dim()
+
+# Optional (to speed up the examples)
+data %<>% sample_n(30000)
+
+data %<>%
+  mutate(bad_loan = as.factor(bad_loan)) #encode the binary repsonse as a factor
+data$bad_loan %>% h2o.levels() #optional: this shows the factor levels
+
+data %>% h2o.describe()
+
+splits <- data %>% h2o.splitFrame(
+  ratios = c(0.7, 0.15), # partition data into 70%, 15%, 15% chunks
+  destination_frames = c("train", "valid", "test"), # frame ID (not required)
+  seed = 1) # setting a seed will guarantee reproducibility
+train <- splits[[1]]
+valid <- splits[[2]]
+test <- splits[[3]]
+
+train %>% nrow
+valid %>% nrow
+test %>% nrow
+
+y <- "bad_loan"
+#remove the interest rate column because it's correlated with the outcome
+x <- setdiff(names(data), c(y, "int_rate"))
+print(x)
+
+aml <- h2o.automl(y = y, x = x,
+                  training_frame = train,
+                  max_models = 10,
+                  seed = 1)
+(lb <- aml@leaderboard)
+print(lb, n = nrow(lb))
+
+aml_perf <- aml@leader %>% h2o.performance(newdata = test)
+aml_perf %>% h2o.auc()
+
+preds_fm <- aml %>% predict(newdata = test)
+preds_fm %>% head()
+preds_ld <- aml@leader %>% predict(newdata = test)
+preds_ld %>% head()
+
+table(as.vector(preds_fm$predict), as.vector(preds_ld$predict))
+
+# more `dplyr` stuff we can do
+data %>%
+  select("annual_inc", "loan_amnt") %T>%
+  plot() %>%
+  colSums(na.rm = TRUE)
+
+data %<>%
+  filter(term == "36 months") %>%
+  mutate(high_loan = loan_amnt > median(loan_amnt)) %>%
+  arrange(desc(loan_amnt))
+
+data %>%
+  group_by(home_ownership) %>%
+  summarise(
+    n = n(),
+    loan_amnt = mean(loan_amnt, na.rm = TRUE)
+  ) %>%
+  arrange(desc(loan_amnt))
+
+h2o.shutdown(prompt = FALSE)
+```
+
+## How is this implementation working?
+
+To integrate `h2o` and the `tidyverse`, I thought that as a very first attempt, we could redefine `magrittr` `pipe` operators. The idea would be: 
+
+* when calling a pipe with a non-`H2OFrame`, just use the regular `magrittr` pipes.
+
+* when calling a pipe with an `H2OFrame`, then convert it to `data.frame`, apply all operators, and if the result is a `matrix`/`data.frame` then reconvert it to an `H2OFrame`.
+
+These code editions can be seen at [https://www.diffchecker.com/LyjKierQ](https://www.diffchecker.com/LyjKierQ).
+
+### Pros:
+
+* It took a few lines of code to implement `tidyh2o`.
+
+### Cons:
+
+* This is really inefficient because, for each pipe operator, it is doing one or two `H2OFrame`~`data.frame` conversions.
+
+* It is redefining the so used `pipe` operators!! And as a side effect, it depends on the order that libraries are loaded (`tidyh2o` must be loaded after `magrittr`, `dplyr`, etc.).
+
+## Optimal solution
+
+I think the best solution would be to redefine the `H2OFrame` class, make it be a `data.frame`/`tibble`, and keep all the Java-H2OFrame information as attributes. In this way, all `tidyverse` functions will work as usual. And then, just update the Java-H2OFrame when needed to do some ML calculations (at Java workspace).
+
+This, would be a big, and very nice collaborative work. Most of the `h2o` functions should be -easily- redefined.

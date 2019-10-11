@@ -1,0 +1,15 @@
+^appveyor\.yml$
+^codecov\.yml$
+^\.travis\.yml$
+^.*\.Rproj$
+^\.Rproj\.user$
+^README\.Rmd$
+^pipe_versions$
+^_pkgdown\.yml$
+^Docker$
+^\.github$
+^CODE_OF_CONDUCT\.md$
+^\.covrignore$
+^\.httr-oauth$
+example.R
+^README_files$
